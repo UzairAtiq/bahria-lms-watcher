@@ -9,6 +9,10 @@ on:
   # Allow manual trigger from the GitHub Actions UI
   workflow_dispatch:
 
+# Opt into Node.js 24 to suppress deprecation warnings
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   check-assignments:
     runs-on: ubuntu-latest
