@@ -2,9 +2,9 @@ name: Bahria LMS Assignment Watcher
 
 on:
   schedule:
-    # Runs every hour at minute 0  (GitHub Actions uses UTC — PKT is UTC+5)
-    # So this fires at :00 every hour UTC = :00 every hour PKT too (same cadence)
-    - cron: "0 * * * *"
+    # Runs every 6 hours (at 00:00, 06:00, 12:00, 18:00 UTC)
+    # PKT = UTC+5, so that's 05:00, 11:00, 17:00, 23:00 PKT
+    - cron: "0 */6 * * *"
 
   # Allow manual trigger from the GitHub Actions UI
   workflow_dispatch:
