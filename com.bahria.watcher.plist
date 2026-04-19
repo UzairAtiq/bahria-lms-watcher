@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.bahria.watcher.plist
+  ========================
+  launchd job that runs bahria_watcher.py every hour.
+
+  Installation:
+    1. Copy this file to ~/Library/LaunchAgents/
+    2. Edit the <string> paths to match your setup (see EDIT HERE comments)
+    3. Run:  launchctl load -w ~/Library/LaunchAgents/com.bahria.watcher.plist
+-->
+<plist version="1.0">
+<dict>
+    <!-- Unique job identifier -->
+    <key>Label</key>
+    <string>com.bahria.watcher</string>
+
+    <!--
+      ProgramArguments:  [python3 path]  [script absolute path]
+      EDIT HERE if your python3 or script lives somewhere else.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>REPLACE_WITH_FULL_PATH_TO/bahria_watcher.py</string>
+    </array>
+
+    <!-- Run every 3600 seconds (1 hour) -->
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <!-- Also run once immediately when loaded -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Stdout and stderr both go to the log file -->
+    <key>StandardOutPath</key>
+    <string>/Users/REPLACE_WITH_USERNAME/bahria_watcher.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/REPLACE_WITH_USERNAME/bahria_watcher.log</string>
+
+    <!-- Environment needed so python3 can find installed packages -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/REPLACE_WITH_USERNAME</string>
+    </dict>
+
+    <!-- Script's working directory -->
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_FULL_PATH_TO_SCRIPT_DIR</string>
+</dict>
+</plist>
