@@ -1,0 +1,78 @@
+name: Bahria LMS Assignment Watcher
+
+on:
+  schedule:
+    # Runs every hour at minute 0  (GitHub Actions uses UTC — PKT is UTC+5)
+    # So this fires at :00 every hour UTC = :00 every hour PKT too (same cadence)
+    - cron: "0 * * * *"
+
+  # Allow manual trigger from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  check-assignments:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10       # kill the job if it hangs
+
+    steps:
+      # ── 1. Check out your repo ───────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Restore cached state file (tracks already-downloaded URLs) ────
+      #     The restore-keys prefix finds the most recent saved cache even
+      #     when the exact run-id key changes each time.
+      - name: Restore download state cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bahria_downloaded.json
+          key: bahria-state-${{ github.run_id }}
+          restore-keys: |
+            bahria-state-
+
+      # ── 3. Set up Python ─────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 4. Install Python dependencies ───────────────────────────────────
+      - name: Install Python packages
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 5. Install Playwright + Chromium (with all system deps) ──────────
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      # ── 6. Run the watcher ───────────────────────────────────────────────
+      #     Credentials come from GitHub Secrets (never stored in the repo).
+      - name: Run LMS watcher
+        env:
+          LMS_USERNAME: ${{ secrets.LMS_USERNAME }}
+          LMS_PASSWORD: ${{ secrets.LMS_PASSWORD }}
+          NTFY_TOPIC:   ${{ secrets.NTFY_TOPIC }}
+          CAMPUS_NAME:  ${{ secrets.CAMPUS_NAME }}
+        run: python bahria_watcher.py
+
+      # ── 7. Upload any downloaded assignments as a GitHub artifact ─────────
+      #     Even if the watcher step failed, try to upload what was saved.
+      - name: Upload downloaded assignments
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assignments-${{ github.run_number }}
+          path: downloads/
+          if-no-files-found: ignore
+          retention-days: 30    # keep artifacts for 30 days
+
+      # ── 8. Upload the log file ────────────────────────────────────────────
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watcher-log-${{ github.run_number }}
+          path: ~/bahria_watcher.log
+          if-no-files-found: ignore
+          retention-days: 7

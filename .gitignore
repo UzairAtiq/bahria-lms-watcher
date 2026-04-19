@@ -1,0 +1,14 @@
+# Python virtual environment (local only)
+.venv/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Do NOT commit state or credentials
+.bahria_downloaded.json
+
+# Downloaded files (handled as GitHub Artifacts)
+downloads/
