@@ -2,57 +2,44 @@ name: Bahria LMS Assignment Watcher
 
 on:
   schedule:
-    # Runs every 6 hours (at 00:00, 06:00, 12:00, 18:00 UTC)
-    # PKT = UTC+5, so that's 05:00, 11:00, 17:00, 23:00 PKT
+    # Every 6 hours (00:00, 06:00, 12:00, 18:00 UTC = 05:00, 11:00, 17:00, 23:00 PKT)
     - cron: "0 */6 * * *"
-
-  # Allow manual trigger from the GitHub Actions UI
   workflow_dispatch:
 
-# Opt into Node.js 24 to suppress deprecation warnings
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   check-assignments:
     runs-on: ubuntu-latest
-    timeout-minutes: 10       # kill the job if it hangs
+    timeout-minutes: 10
 
     steps:
-      # ── 1. Check out your repo ───────────────────────────────────────────
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ── 2. Restore cached state file (tracks already-downloaded URLs) ────
-      #     The restore-keys prefix finds the most recent saved cache even
-      #     when the exact run-id key changes each time.
-      - name: Restore download state cache
+      # Restore the URL registry from the previous run so duplicates are skipped
+      - name: Restore state cache
         uses: actions/cache@v4
         with:
           path: ~/.bahria_downloaded.json
           key: bahria-state-${{ github.run_id }}
-          restore-keys: |
-            bahria-state-
+          restore-keys: bahria-state-
 
-      # ── 3. Set up Python ─────────────────────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ── 4. Install Python dependencies ───────────────────────────────────
-      - name: Install Python packages
+      - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── 5. Install Playwright + Chromium (with all system deps) ──────────
-      - name: Install Playwright Chromium
+      - name: Install Playwright browser
         run: python -m playwright install --with-deps chromium
 
-      # ── 6. Run the watcher ───────────────────────────────────────────────
-      #     Credentials come from GitHub Secrets (never stored in the repo).
-      - name: Run LMS watcher
+      - name: Run watcher
         env:
           LMS_USERNAME: ${{ secrets.LMS_USERNAME }}
           LMS_PASSWORD: ${{ secrets.LMS_PASSWORD }}
@@ -60,18 +47,16 @@ jobs:
           CAMPUS_NAME:  ${{ secrets.CAMPUS_NAME }}
         run: python bahria_watcher.py
 
-      # ── 7. Upload any downloaded assignments as a GitHub artifact ─────────
-      #     Even if the watcher step failed, try to upload what was saved.
-      - name: Upload downloaded assignments
+      # Upload any downloaded files as a 30-day artifact
+      - name: Upload assignments
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: assignments-${{ github.run_number }}
           path: downloads/
           if-no-files-found: ignore
-          retention-days: 30    # keep artifacts for 30 days
+          retention-days: 30
 
-      # ── 8. Upload the log file ────────────────────────────────────────────
       - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
