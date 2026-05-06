@@ -7,6 +7,8 @@ and sends push notifications via ntfy.sh.
 Supports both local execution (macOS launchd) and GitHub Actions.
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import json
@@ -16,6 +18,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -89,14 +92,98 @@ log = logging.getLogger("bahria_watcher")
 # State persistence
 # ---------------------------------------------------------------------------
 
+def assignment_key(course: str, title: str) -> str:
+    """
+    Create a notification-dedup key from course name and assignment title.
+
+    These fields are inherently stable across sessions — they never change
+    regardless of login cookies or base64 URL parameters.  This is the
+    primary key used to decide whether a notification should be sent.
+    """
+    c = sanitize(course.strip()).lower()
+    t = sanitize(title.strip()).lower()
+    return f"assignment:{c}|{t}"
+
+
+def _migrate_state_keys(state: dict) -> dict:
+    """
+    Migrate old-format stable keys to the new 2-field format.
+
+    Old: stable:<student_id>,<date>,Assignment,<flag>,<filename>
+    New: stable:<student_id>,<filename>
+
+    This ensures the GitHub Actions cache (which may still contain old keys)
+    is transparently upgraded on the next run.
+    """
+    migrated = {}
+    changed = False
+    for key, val in state.items():
+        if key.startswith("stable:"):
+            parts = key[len("stable:"):].split(",")
+            if len(parts) >= 5:
+                new_key = f"stable:{parts[0]},{parts[4]}"
+                if new_key != key:
+                    log.info(f"  Migrating state key: {key} → {new_key}")
+                    changed = True
+                    key = new_key
+        migrated[key] = val
+    if changed:
+        log.info(f"  Migrated {len(migrated)} state entries to new key format.")
+    return migrated
+
+
+def _migrate_add_assignment_keys(state: dict) -> dict:
+    """
+    Back-fill assignment: keys from existing stable: download records.
+
+    This prevents already-downloaded assignments from re-triggering
+    'New Assignment' notifications after the code update that added
+    the dual-key dedup system.
+    """
+    new_keys = {}
+    for key, val in state.items():
+        if key.startswith("stable:") and isinstance(val, dict):
+            course = val.get("course", "")
+            title = val.get("title", "")
+            if course and title:
+                a_key = assignment_key(course, title)
+                if a_key not in state and a_key not in new_keys:
+                    new_keys[a_key] = {
+                        "title":      title,
+                        "course":     course,
+                        "deadline":   val.get("deadline", "Unknown"),
+                        "first_seen": val.get("downloaded_at",
+                                              datetime.utcnow().isoformat()),
+                        "notified":   True,
+                        "migrated":   True,
+                    }
+                    log.info(f"  Back-filled assignment key: {a_key}")
+    if new_keys:
+        log.info(f"  Back-filled {len(new_keys)} assignment key(s).")
+        state.update(new_keys)
+    return state
+
+
 def load_state() -> dict:
     """Return the set of already-processed download URLs from disk."""
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE, encoding="utf-8") as f:
-                return json.load(f)
+                raw = json.load(f)
+            # Auto-migrate old key format if needed.
+            state = _migrate_state_keys(raw)
+            # Back-fill assignment: keys from existing stable: entries.
+            state = _migrate_add_assignment_keys(state)
+            # Log summary so CI logs show whether state was restored.
+            dl_keys = sum(1 for k in state if k.startswith("stable:"))
+            asn_keys = sum(1 for k in state if k.startswith("assignment:"))
+            log.info(f"State loaded: {dl_keys} download(s), "
+                     f"{asn_keys} known assignment(s).")
+            return state
         except (json.JSONDecodeError, OSError):
             log.warning("State file unreadable — starting fresh.")
+    else:
+        log.info("No state file found — starting fresh.")
     return {}
 
 
@@ -104,6 +191,38 @@ def save_state(state: dict) -> None:
     """Persist the processed-URL registry to disk."""
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
+
+
+def stable_key(url: str) -> str:
+    """
+    Derive a stable, session-independent identifier for an assignment URL.
+
+    The LMS Download.php?k=<base64> URLs embed session-specific parameters
+    inside the base64 blob.  The decoded string looks like:
+
+        <student_id>,<date>,Assignment,<flag>,<filename>,<lms_url_with_session>
+
+    Both the *date* (field 1) and the *session URL* (field 5) change on every
+    access, so we keep only the truly stable parts:
+      - field 0: student_id  (constant)
+      - field 4: filename    (constant for a given assignment file)
+
+    Falls back to the raw URL if decoding fails (so nothing is lost).
+    """
+    try:
+        k = parse_qs(urlparse(url).query).get("k", [None])[0]
+        if k:
+            decoded = base64.b64decode(k + "==").decode("utf-8", errors="ignore")
+            parts = decoded.split(",")
+            # Use student_id (field 0) + filename (field 4) — these are the
+            # only fields that stay identical across sessions.
+            if len(parts) >= 5:
+                return f"stable:{parts[0]},{parts[4]}"
+            # Fewer fields than expected — keep everything we have.
+            return "stable:" + ",".join(parts)
+    except Exception:
+        pass
+    return url  # fallback: use raw URL
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +310,7 @@ def download_file(url: str, dest: Path, cookies: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _click_first_visible(page, selectors: list[str],
-                                timeout: int = 4_000) -> str | None:
+                                timeout: int = 4_000) -> Optional[str]:
     """Try each selector in order and click the first visible match."""
     for sel in selectors:
         try:
@@ -446,7 +565,12 @@ async def run_watcher() -> None:
             # -- Extract session cookies for httpx downloads
             cookies = {c["name"]: c["value"] for c in await context.cookies()}
 
-            # -- Download files not already in state
+            # -- Process unsubmitted assignments
+            # Two-layer deduplication:
+            #   1. assignment_key(course, title) — notification dedup
+            #      (course+title never change between sessions)
+            #   2. stable_key(url) — download dedup
+            #      (student_id+filename from the base64 URL)
             for item in downloadable:
                 url      = item["href"]
                 course   = item.get("course", "General")
@@ -454,26 +578,61 @@ async def run_watcher() -> None:
                 deadline = item.get("deadline") or "Unknown"
                 row_text = item.get("rowText", "")
 
-                if url in state:
-                    log.info(f"  Skip (seen): {title}")
+                # --- Notification dedup: course + title (always stable) ---
+                a_key = assignment_key(course, title)
+                already_notified = a_key in state
+
+                # --- Download dedup: URL fingerprint ---
+                d_key = stable_key(url)
+                already_downloaded = d_key in state
+
+                if already_notified and already_downloaded:
+                    log.info(f"  Skip (known & downloaded): {title}")
                     continue
 
-                filename = resolve_filename(url, title, row_text)
-                dest     = DOWNLOAD_DIR / sanitize(course) / filename
+                if already_notified and not already_downloaded:
+                    # URL changed (new session) but assignment was already
+                    # notified — download silently, don't re-notify.
+                    log.info(f"  Re-download (URL changed, already notified): "
+                             f"{title}")
 
-                log.info(f"  New: {title!r} | {course} | due {deadline}")
-                ok = download_file(url, dest, cookies)
+                if not already_notified:
+                    log.info(f"  ★ New: {title!r} | {course} | due {deadline}")
 
-                state[url] = {
-                    "title":          title,
-                    "deadline":       deadline,
-                    "course":         course,
-                    "downloaded_at":  datetime.utcnow().isoformat(),
-                    "success":        ok,
-                    "local_path":     str(dest) if ok else None,
-                }
+                # --- Download if not yet downloaded ---
+                ok = True
+                if not already_downloaded:
+                    filename = resolve_filename(url, title, row_text)
+                    dest     = DOWNLOAD_DIR / sanitize(course) / filename
+                    ok = download_file(url, dest, cookies)
+
+                    state[d_key] = {
+                        "title":          title,
+                        "deadline":       deadline,
+                        "course":         course,
+                        "downloaded_at":  datetime.utcnow().isoformat(),
+                        "success":        ok,
+                        "local_path":     str(dest) if ok else None,
+                        "url":            url,
+                    }
+
+                # --- Record assignment as known (prevents future notifs) ---
+                if not already_notified:
+                    state[a_key] = {
+                        "title":      title,
+                        "course":     course,
+                        "deadline":   deadline,
+                        "first_seen": datetime.utcnow().isoformat(),
+                        "notified":   True,
+                    }
+                    new_items.append({
+                        "title":    title,
+                        "course":   course,
+                        "deadline": deadline,
+                        "success":  ok,
+                    })
+
                 save_state(state)
-                new_items.append(state[url])
 
         except PlaywrightTimeout as exc:
             log.error(f"Timeout: {exc}")
@@ -486,7 +645,7 @@ async def run_watcher() -> None:
         finally:
             await browser.close()
 
-    # -- Send one notification per course that had new assignments
+    # -- Send one notification per course that had NEW assignments
     if new_items:
         by_course: dict[str, list] = {}
         for item in new_items:
@@ -496,12 +655,13 @@ async def run_watcher() -> None:
             ok_count = sum(1 for i in items if i["success"])
             lines    = [
                 f"Course: {course}",
+                f"New assignments: {len(items)}",
                 f"Downloaded: {ok_count}/{len(items)}",
                 "",
             ]
             for i in items[:6]:
-                status = "OK" if i["success"] else "FAIL"
-                lines.append(f"[{status}] {i['title']}")
+                status = "✅" if i["success"] else "❌"
+                lines.append(f"{status} {i['title']}")
                 lines.append(f"      Due: {i['deadline']}")
             if len(items) > 6:
                 lines.append(f"  ...and {len(items) - 6} more")
@@ -509,7 +669,7 @@ async def run_watcher() -> None:
                 lines += ["", f"Artifacts: {_CI_RUN_URL}"]
 
             send_notification(
-                f"New Assignment - {course}",
+                f"🆕 New Assignment - {course}",
                 "\n".join(lines),
                 priority="high",
             )

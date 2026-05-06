@@ -8,8 +8,7 @@
 
   Installation:
     1. Copy this file to ~/Library/LaunchAgents/
-    2. Edit the <string> paths to match your setup (see EDIT HERE comments)
-    3. Run:  launchctl load -w ~/Library/LaunchAgents/com.bahria.watcher.plist
+    2. Run:  launchctl load -w ~/Library/LaunchAgents/com.bahria.watcher.plist
 -->
 <plist version="1.0">
 <dict>
@@ -18,13 +17,12 @@
     <string>com.bahria.watcher</string>
 
     <!--
-      ProgramArguments:  [python3 path]  [script absolute path]
-      EDIT HERE if your python3 or script lives somewhere else.
+      ProgramArguments:  [venv python3]  [script absolute path]
     -->
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>REPLACE_WITH_FULL_PATH_TO/bahria_watcher.py</string>
+        <string>/Users/uzair/check/.venv/bin/python3</string>
+        <string>/Users/uzair/check/bahria_watcher.py</string>
     </array>
 
     <!-- Run every 3600 seconds (1 hour) -->
@@ -37,22 +35,22 @@
 
     <!-- Stdout and stderr both go to the log file -->
     <key>StandardOutPath</key>
-    <string>/Users/REPLACE_WITH_USERNAME/bahria_watcher.log</string>
+    <string>/Users/uzair/bahria_watcher.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/REPLACE_WITH_USERNAME/bahria_watcher.log</string>
+    <string>/Users/uzair/bahria_watcher.log</string>
 
     <!-- Environment needed so python3 can find installed packages -->
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/Users/uzair/check/.venv/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
-        <string>/Users/REPLACE_WITH_USERNAME</string>
+        <string>/Users/uzair</string>
     </dict>
 
     <!-- Script's working directory -->
     <key>WorkingDirectory</key>
-    <string>REPLACE_WITH_FULL_PATH_TO_SCRIPT_DIR</string>
+    <string>/Users/uzair/check</string>
 </dict>
 </plist>
